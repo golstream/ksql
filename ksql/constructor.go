@@ -10,17 +10,13 @@ type (
 	Builder int
 )
 
-var (
-	SelectBuilder Builder
-)
-
 type builderContext struct {
 	query     Query
 	fields    FullSchema
 	join      Join
 	cond      Cond
 	groupedBy []string
-	with      With
+	with      Metadata
 	cte       []static.QueryPlan
 }
 
@@ -325,7 +321,7 @@ func (cl condLayer) Having(having ...HavingEx) condLayer {
 	return condLayer{ctx: cl.ctx}
 }
 
-func (cl condLayer) With(with With) metadataLayer {
+func (cl condLayer) With(with Metadata) metadataLayer {
 	cl.ctx.with = with
 	return metadataLayer{ctx: cl.ctx}
 }
