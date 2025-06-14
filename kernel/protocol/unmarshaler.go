@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"ksql/kernel/protocol/ddl"
+	"ksql/kernel/protocol/proto"
 	"ksql/ksql"
 	"ksql/schema"
 	"regexp"
@@ -49,7 +50,13 @@ func (kd KafkaDeserializer) Deserialize(
 
 	cteQuery := reg.FindString(query)
 
-	deserializeCTE(cteQuery, kd)
+	var (
+		cte map[string]KafkaSerializer
+	)
+
+	cteQuery, _ = strings.CutPrefix(cteQuery, "WITH")
+
+	ks.CTE = deserializeCTE(cteQuery, cte, kd)
 
 	partialQuery := reg.ReplaceAllString(query, "")
 
@@ -83,6 +90,11 @@ func (kd KafkaDeserializer) Deserialize(
 	ks.JoinAlgo = kd.JoinAlgo.Deserialize(reg.FindString(partialQuery))
 	partialQuery = reg.ReplaceAllString(partialQuery, "")
 
+	reg = regexp.MustCompile(groupByRegular)
+
+	ks.GroupBy = kd.GroupByAlgo.Deserialize(reg.FindString(partialQuery))
+	partialQuery = reg.ReplaceAllString(partialQuery, "")
+
 	reg = regexp.MustCompile(whereRegular)
 
 	whereClause := reg.FindString(partialQuery)
@@ -95,11 +107,6 @@ func (kd KafkaDeserializer) Deserialize(
 
 	ks.CondAlgo = kd.ConditionalAlgo.Deserialize(whereClause, havingClause)
 
-	reg = regexp.MustCompile(groupByRegular)
-
-	ks.GroupBy = kd.GroupByAlgo.Deserialize(reg.FindString(partialQuery))
-	partialQuery = reg.ReplaceAllString(partialQuery, "")
-
 	reg = regexp.MustCompile(metadataRegular)
 
 	ks.MetadataAlgo = kd.MetadataAlgo.Deserialize(reg.FindString(partialQuery))
@@ -110,27 +117,40 @@ func (kd KafkaDeserializer) Deserialize(
 
 func deserializeCTE(
 	partialQuery string,
+	cte map[string]KafkaSerializer,
 	kd KafkaDeserializer) map[string]KafkaSerializer {
 
-	var (
-		cte map[string]KafkaSerializer
-	)
+	name, query, found := strings.Cut(partialQuery, "AS")
+	if !found {
+		return cte
+	}
 
-	return cte
-}
+	if name == "" {
+		name = "AS"
+	}
 
-func deserializeAs(
-	partialQuery string,
-	kd KafkaDeserializer) map[string]KafkaSerializer {
+	tailQuery, found := strings.CutPrefix(query, "(")
+	if !found {
+		return cte
+	}
 
-	return map[string]KafkaSerializer{"AS": kd.Deserialize(partialQuery)}
+	partialQuery, restQuery, found := strings.Cut(tailQuery, "),")
+	if !found {
+		partialQuery, _, found = strings.Cut(tailQuery, ") SELECT")
+		kd.Deserialize(partialQuery)
+		return cte
+	}
+
+	cte[name] = kd.Deserialize(partialQuery)
+
+	return deserializeCTE(restQuery, cte, kd)
 }
 
 const (
-	selectRegular = `(?is)\bSELECT\s+(.*?)(?=\s+FROM)`
+	selectRegular = `(?is)FROM\s+[a-zA-Z0-9_\.]+\s+([a-zA-Z0-9_]+)`
 	createRegular = `(?is)\bCREATE\s+(TABLE|STREAM)\s+([a-zA-Z0-9_]+)\s*\((.*?)\)\s*(WITH\s*\(.*\))?`
 	insertRegular = `(?is)\bINSERT\s+INTO\s+([a-zA-Z0-9_]+)\s*\((.*?)\)\s*VALUES\s*\((.*?)\)`
-	cteRegular    = `(?is)\bWITH\s+([a-zA-Z0-9_]+)\s+AS\s*\((.*?)\)`
+	cteRegular    = `(?is)\bWITH\s+((?:[a-zA-Z0-9_]+\s+AS\s*\((?:[^()]*|\([^()]*\))*\)\s*,?\s*)+)`
 )
 
 type QueryDeserializeAlgo interface {
@@ -138,7 +158,7 @@ type QueryDeserializeAlgo interface {
 }
 
 const (
-	schemeRegular = `(?i)SELECT\s+(.*?)\s+FROM`
+	schemeRegular = `(?is)\bSELECT\s+(.*?)\s+FROM\b`
 )
 
 type SchemaDeserializeAlgo interface {
@@ -150,7 +170,7 @@ const (
 )
 
 type JoinDeserializeAlgo interface {
-	Deserialize(string) Join
+	Deserialize(string) proto.Join
 }
 
 const (
@@ -167,7 +187,7 @@ const (
 )
 
 type ConditionalDeserializeAlgo interface {
-	Deserialize(string, string) Cond
+	Deserialize(string, string) proto.Cond
 }
 
 const (
@@ -175,5 +195,5 @@ const (
 )
 
 type MetadataDeserializeAlgo interface {
-	Deserialize(string) With
+	Deserialize(string) proto.With
 }

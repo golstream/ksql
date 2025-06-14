@@ -3,6 +3,7 @@ package schema
 import (
 	"errors"
 	"ksql/kinds"
+	"ksql/shared"
 	"ksql/static"
 	"reflect"
 )
@@ -29,8 +30,8 @@ func CompareStructs(
 	map[string]bool, map[string]struct{}) {
 
 	var (
-		commonMap map[string]bool
-		diffMap   map[string]struct{}
+		commonMap = make(map[string]bool)
+		diffMap   = make(map[string]struct{})
 	)
 
 	for i := 0; i < firstStruct.NumField(); i++ {
@@ -56,7 +57,7 @@ func CompareStructs(
 func FindRelationFields(relationName string) (map[string]SearchField, error) {
 	streamSettings, exists := static.StreamsProjections.Load(relationName)
 	if exists {
-		settings, ok := streamSettings.(static.StreamSettings)
+		settings, ok := streamSettings.(shared.StreamSettings)
 		if !ok {
 			return nil, errors.New("invalid map values have been inserted")
 		}
@@ -65,7 +66,7 @@ func FindRelationFields(relationName string) (map[string]SearchField, error) {
 
 	tableSettings, exists := static.TablesProjections.Load(relationName)
 	if exists {
-		settings, ok := tableSettings.(static.TableSettings)
+		settings, ok := tableSettings.(shared.TableSettings)
 		if !ok {
 			return nil, errors.New("invalid map values have been inserted")
 		}

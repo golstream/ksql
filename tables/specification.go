@@ -11,6 +11,7 @@ import (
 	"ksql/kinds"
 	"ksql/ksql"
 	"ksql/schema"
+	"ksql/shared"
 	"ksql/static"
 	"ksql/util"
 	"net/http"
@@ -154,7 +155,7 @@ func (s *Table[S]) Drop(ctx context.Context) error {
 func GetTable[S any](
 	ctx context.Context,
 	table string,
-	settings TableSettings) (*Table[S], error) {
+	settings shared.TableSettings) (*Table[S], error) {
 
 	var (
 		s S
@@ -205,24 +206,24 @@ func GetTable[S any](
 func CreateTable[S any](
 	ctx context.Context,
 	tableName string,
-	settings TableSettings) (*Table[S], error) {
+	settings shared.TableSettings) (*Table[S], error) {
 
 	var (
 		s S
 	)
 
 	rmSchema := schema.SerializeProvidedStruct(s)
+	searchFields := schema.ParseStructToFields(tableName, rmSchema)
 
-	meta := ksql.Metadata{
+	metadata := ksql.Metadata{
 		Topic:       *settings.SourceTopic,
 		ValueFormat: kinds.JSON.String(),
 	}
 
-	query, ok := ksql.SelectAsStruct(s).
-		From(tableName).
-		WithMeta(meta).
+	query, ok := ksql.Create(ksql.TABLE, tableName).
+		SchemaFields(searchFields...).
+		With(metadata).
 		Expression()
-
 	if !ok {
 		return nil, errors.New("cannot build query for table creation")
 	}
@@ -246,7 +247,7 @@ func CreateTable[S any](
 		}
 
 		var (
-			create dao.CreateRelationResponse
+			create []dao.CreateRelationResponse
 		)
 
 		if err := jsoniter.Unmarshal(val, &create); err != nil {
@@ -279,7 +280,7 @@ func CreateTable[S any](
 func CreateTableAsSelect[S any](
 	ctx context.Context,
 	tableName string,
-	settings TableSettings,
+	settings shared.TableSettings,
 	selectQuery ksql.SelectBuilder,
 ) (*Table[S], error) {
 
@@ -330,7 +331,7 @@ func CreateTableAsSelect[S any](
 		}
 
 		var (
-			create dao.CreateRelationResponse
+			create []dao.CreateRelationResponse
 		)
 
 		if err := jsoniter.Unmarshal(val, &create); err != nil {
@@ -460,27 +461,4 @@ func (s *Table[S]) SelectWithEmit(
 	}()
 
 	return valuesC, nil
-}
-
-// ToTopic - propagates table data to new topic
-// table scheme is fully extended to new topic
-func (s *Table[S]) ToTopic(topicName string) (topic static.Topic[S]) {
-	topic.Name = topicName
-	topic.Partitions = int(*s.partitions)
-
-	return
-}
-
-// ToStream - propagates table data to new stream
-// and shares schema with it
-func (s *Table[S]) ToStream(streamName string) (stream static.Stream[S]) {
-	static.StreamsProjections.Store(streamName, static.StreamSettings{
-		Name:        streamName,
-		SourceTopic: s.sourceTopic,
-		Partitions:  s.partitions,
-	})
-
-	stream.Name = streamName
-
-	return
 }
