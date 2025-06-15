@@ -6,7 +6,14 @@ import (
 	"ksql/kinds"
 	"ksql/static"
 	"reflect"
+	"regexp"
+	"strings"
 )
+
+type Ident struct {
+	RelationLabel string
+	KType         kinds.Ktype
+}
 
 // SerializeFieldsToStruct - creates struct from composition
 // of fields. Can be used for new schemas creation
@@ -39,7 +46,7 @@ func ParseStructToFieldsDictionary(
 ) map[string]SearchField {
 
 	var (
-		fields map[string]SearchField
+		fields = make(map[string]SearchField)
 	)
 
 	for i := 0; i < runtimeStruct.NumField(); i++ {
@@ -83,10 +90,17 @@ func ParseStructToFields(
 			continue
 		}
 
+		var tag string
+
+		if field.Tag != "" {
+			tag, _ = strings.CutPrefix(string(field.Tag), "ksql:")
+		}
+
 		fields = append(fields, SearchField{
-			Name:     field.Tag.Get(static.KSQL),
+			Name:     field.Name,
 			Relation: structName,
 			Kind:     ksqlKind,
+			Tag:      tag,
 		})
 	}
 
@@ -99,13 +113,20 @@ func SerializeProvidedStruct(
 	schema any) reflect.Type {
 
 	var (
-		values map[string]kinds.Ktype
+		values = make(map[string]Ident)
 	)
 
 	fields := structs.Fields(schema)
 
 	for _, field := range fields {
-		tag := field.Tag(static.KSQL)
+		ident := Ident{}
+		fmt.Println(field.Name())
+		tag := strings.Split(field.Tag(static.KSQL), ",")
+
+		if len(tag) == 2 {
+			ident.RelationLabel = tag[1]
+		}
+
 		kind := field.Kind()
 
 		ksqlKind, err := kinds.ToKsql(kind)
@@ -113,7 +134,9 @@ func SerializeProvidedStruct(
 			continue
 		}
 
-		values[tag] = ksqlKind
+		ident.KType = ksqlKind
+
+		values[strings.ToUpper(tag[0])] = ident
 	}
 
 	return createProjection(values)
@@ -126,20 +149,20 @@ func SerializeRemoteSchema(
 
 	var (
 		schemaFields = make(
-			map[string]kinds.Ktype,
+			map[string]Ident,
 		)
 	)
 
 	for k, v := range fields {
 		switch v {
-		case "INT":
-			schemaFields[k] = kinds.Int
+		case "INT", "INTEGER":
+			schemaFields[k] = Ident{KType: kinds.Int}
 		case "FLOAT":
-			schemaFields[k] = kinds.Float
-		case "VARCHAR":
-			schemaFields[k] = kinds.String
+			schemaFields[k] = Ident{KType: kinds.Float}
+		case "VARCHAR", "STRING":
+			schemaFields[k] = Ident{KType: kinds.String}
 		case "BOOL":
-			schemaFields[k] = kinds.Bool
+			schemaFields[k] = Ident{KType: kinds.Bool}
 		}
 	}
 
@@ -149,19 +172,50 @@ func SerializeRemoteSchema(
 // createProjection - defines reflect structure from map[string]kinds.Ktype declaration
 // current structure is comparable. Can be invoked, parsed and cloned
 func createProjection(
-	fieldsList map[string]kinds.Ktype) reflect.Type {
+	fieldsList map[string]Ident) reflect.Type {
 
 	var (
 		fields = make([]reflect.StructField, 0, len(fieldsList))
 	)
 
+	fmt.Println(fieldsList)
+
 	for name, kind := range fieldsList {
+		var tag reflect.StructTag
+
+		if kind.RelationLabel != "" {
+			tag = reflect.StructTag(fmt.Sprintf("%s:%s", static.KSQL, kind.RelationLabel))
+		}
+
 		fields = append(fields, reflect.StructField{
 			Name: name,
-			Type: reflect.TypeOf(kind.Example()),
-			Tag:  reflect.StructTag(fmt.Sprintf("%s:%s", static.KSQL, name)),
+			Type: reflect.TypeOf(kind.KType.Example()),
+			Tag:  tag,
 		})
 	}
 
 	return reflect.StructOf(fields)
+}
+
+func ParseHeadersAndValues(headers string, values []any) (map[string]any, error) {
+	parts := strings.Split(headers, ",")
+
+	result := make(map[string]any)
+
+	re := regexp.MustCompile("`([^`]*)`")
+
+	if len(parts) != len(values) {
+		return nil, fmt.Errorf("headers and values count mismatch")
+	}
+
+	for i, part := range parts {
+		match := re.FindStringSubmatch(part)
+		if len(match) < 2 {
+			return nil, fmt.Errorf("invalid header format: %s", part)
+		}
+
+		result[match[1]] = values[i]
+	}
+
+	return result, nil
 }
